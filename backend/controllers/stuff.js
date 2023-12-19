@@ -1,5 +1,6 @@
 const Book = require('../models/Book');
 const fs = require('fs');
+const sharp = require('sharp')
 
 // Récupérer tous les livres
 exports.getAllBooks = (req, res, next) => {
@@ -22,18 +23,60 @@ exports.getBestRatingBooks = (req, res, next) => {
 };
 
 // Créer un livre
-exports.createBook = (req, res, next) => { 
+exports.createBook = (req, res, next) => {
   console.log("createBook");
-    const bookObject = JSON.parse(req.body.book);
-    delete bookObject._id;
-    const book = new Book({
-        ...bookObject,
-        imageUrl: `${req.protocol}://${req.get('host')}/images/${req.file.filename}`
-    });
+
+  // Analyser les données du livre à partir du corps de la requête
+  const bookObject = JSON.parse(req.body.book);
+
+  // Supprimer le champ _id pour garantir la génération d'un nouvel ID par MongoDB
+  delete bookObject._id;
+
+  // Créer une nouvelle instance de livre avec les données analysées
+  const book = new Book({
+    ...bookObject
+  });
+
+  // Vérifier si un fichier image est attaché à la requête
+  if (req.file) {
+    // Utiliser Sharp pour traiter l'image
+    const imagePath = `${req.file.destination}/${req.file.filename}`;
+    const outputImagePath = `${req.file.destination}/resized-${req.file.filename}`;
+
+    sharp(imagePath)
+      .resize({ width: 800 }) // Ajuster les options de redimensionnement selon les besoins
+      .toFile(outputImagePath, (err) => {
+        if (err) {
+          console.error(`Erreur de traitement de l'image : ${err.message}`);
+          return res.status(400).json({ error: 'Erreur de traitement de l\'image' });
+        }
+
+        // Ajouter l'URL de l'image traitée à l'objet livre
+        book.imageUrl = `${req.protocol}://${req.get('host')}/images/resized-${req.file.filename}`;
+
+        // Enregistrer le livre dans la base de données
+        book.save()
+          .then(() => {
+            // Supprimer le fichier image original
+            fs.unlinkSync(imagePath);
+
+            // Répondre avec un message de succès
+            res.status(201).json({ message: 'Objet enregistré !' });
+          })
+          .catch(error => {
+            console.log(error);
+            res.status(400).json({ error });
+          });
+      });
+  } else {
+    // Enregistrer le livre dans la base de données sans traiter d'image
     book.save()
-        .then(() => res.status(201).json({ message: 'Objet enregistré !'}))
-        .catch(error => {console.log(error);
-          res.status(400).json({ error })});
+      .then(() => res.status(201).json({ message: 'Objet enregistré !' }))
+      .catch(error => {
+        console.log(error);
+        res.status(400).json({ error });
+      });
+  }
 };
 
 
@@ -107,18 +150,26 @@ exports.modifyBook = (req, res, next) => {
 
 // Supprimer un livre
 exports.deleteBook = (req, res, next) => {
+  // Rechercher le livre à supprimer par son ID
   Book.findOne({ _id: req.params.id })
     .then(book => {
       // Vérifier si l'utilisateur est autorisé à supprimer ce livre
       if (book.userId !== req.auth.userId) {
-        res.status(401).json({ message: 'Not authorized' });
+        res.status(401).json({ message: 'Non autorisé' });
       } else {
-        // Supprimer l'image associée et ensuite supprimer le livre
+        // Récupérer le nom du fichier image associé
         const filename = book.imageUrl.split('/images/')[1];
+
+        // Supprimer le fichier image associé
         fs.unlink(`images/${filename}`, () => {
+          // Supprimer le livre de la base de données
           Book.deleteOne({ _id: req.params.id })
-            .then(() => { res.status(200).json({ message: 'Objet supprimé !' }) })
-            .catch(error => res.status(401).json({ error }));
+            .then(() => {
+              res.status(200).json({ message: 'Objet supprimé !' });
+            })
+            .catch(error => {
+              res.status(401).json({ error });
+            });
         });
       }
     })
